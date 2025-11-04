@@ -67,19 +67,20 @@ model UserState {
 }
 
 model Vote {
-  id         String   @id @default(uuid())
-  userId     String
-  datasetId  String
-  leftId     String
-  rightId    String
-  winnerId   String
-  createdAt  DateTime @default(now())
+  id        Int      @id @default(autoincrement())
+  userId    String
+  datasetId String
+  leftId    String
+  rightId   String
+  winnerId  String
+  createdAt DateTime @default(now())
   orderIndex Int
-  user       User      @relation(fields: [userId], references: [id])
-  dataset    Dataset   @relation(fields: [datasetId], references: [id])
-  left       Initiative @relation("VoteLeft", fields: [leftId], references: [id])
-  right      Initiative @relation("VoteRight", fields: [rightId], references: [id])
-  winner     Initiative @relation("VoteWinner", fields: [winnerId], references: [id])
+
+  user     User     @relation(fields: [userId], references: [id])
+  dataset  Dataset  @relation(fields: [datasetId], references: [id])
+  left     Initiative @relation("VoteLeft", fields: [leftId], references: [id])
+  right    Initiative @relation("VoteRight", fields: [rightId], references: [id])
+  winner   Initiative @relation("VoteWinner", fields: [winnerId], references: [id])
 
   @@index([datasetId])
   @@index([userId, datasetId])
