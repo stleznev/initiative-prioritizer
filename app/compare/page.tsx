@@ -1,7 +1,8 @@
-"use client";
+// app/compare/page.tsx
+'use client';
 
 import { useEffect, useState } from 'react';
-import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 
 interface Initiative {
   id: string;
@@ -13,127 +14,117 @@ interface Initiative {
   urgentStatus: string;
   cdekStatus: string;
   inProcessStatus: string;
-  meta?: any;
 }
 
-interface InitiativePair {
-  a: Initiative;
-  b: Initiative | null;
-  progress: { completed: number; total: number };
+interface PairResponse {
+  done: number;
+  total: number;
+  pair: {
+    left: Initiative;
+    right: Initiative;
+  } | null;
 }
 
-/**
- * Page for comparing two initiatives. Fetches the next pair from the
- * backend and allows the user to choose which initiative is more important.
- * After each vote a new pair is loaded until there are no comparisons left.
- */
 export default function ComparePage() {
-  const [pair, setPair] = useState<InitiativePair | null>(null);
+  const [data, setData] = useState<PairResponse | null>(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const router = useRouter();
 
-  async function fetchPair() {
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await fetch('/api/next-pair');
-      if (res.ok) {
-        const data = await res.json();
-        setPair(data);
-      } else {
-        const data = await res.json().catch(() => ({}));
-        setError(data.error || 'Не удалось получить данные');
-        setPair(null);
-      }
-    } catch (_err) {
-      setError('Ошибка сети при загрузке данных');
-      setPair(null);
-    } finally {
+  async function fetchNextPair() {
+    const res = await fetch('/api/next-pair', { cache: 'no-store' });
+    if (res.ok) {
+      const json: PairResponse = await res.json();
+      setData(json);
       setLoading(false);
+      if (json.pair === null) {
+        // все пары сравнили
+        return;
+      }
+    } else if (res.status === 401) {
+      router.push('/onboarding');
+    } else {
+      alert('Ошибка получения пар');
     }
   }
 
   useEffect(() => {
-    fetchPair();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    fetchNextPair();
   }, []);
 
-  async function handleVote(choice: 'a' | 'b') {
-    if (!pair) return;
-    const leftId = pair.a.id;
-    const rightId = pair.b?.id ?? null;
-    const winnerId = choice === 'a' ? pair.a.id : pair.b?.id ?? pair.a.id;
-    try {
-      await fetch('/api/vote', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ leftId, rightId, winnerId }),
-      });
-    } catch (_err) {
-      // Ignore network errors; next fetch will handle
-    }
-    fetchPair();
+  async function handleVote(winnerId: string) {
+    if (!data?.pair) return;
+    const { left, right } = data.pair;
+    await fetch('/api/vote', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        leftId: left.id,
+        rightId: right.id,
+        winnerId,
+      }),
+    });
+    fetchNextPair();
   }
 
-  const renderInitiative = (initiative: Initiative) => (
-    <div className="flex flex-col items-start space-y-1 text-left">
-      <p className="font-semibold">{initiative.businessStream}-{initiative.number}</p>
-      <p className="font-bold text-lg">{initiative.initiativeName}</p>
-      <p className="text-sm text-gray-600">Стрим: {initiative.businessStream}</p>
-      <p className="text-sm text-gray-600">Группа: {initiative.initiativeGroup}</p>
-      <p className="text-sm text-gray-600">Важно? - {initiative.importantStatus} Срочно? - {initiative.urgentStatus}</p>
-      <p className="text-sm text-gray-600">Отбираем ли у СДЭК? - {initiative.cdekStatus}</p>
-      <p className="text-sm text-gray-600">Делаем сейчас? - {initiative.inProcessStatus}</p>
+  // кнопка "Назад" – вызывайте новый API, который удаляет последний голос и обновляет состояние
+  async function handleBack() {
+    const res = await fetch('/api/history/back', { method: 'POST' });
+    if (res.ok) fetchNextPair();
+  }
+
+  if (loading) return <p>Загрузка…</p>;
+  if (!data) return null;
+
+  if (data.pair === null) {
+    return <p>Спасибо за участие! Вы завершили {data.done} из {data.total} сравнений.</p>;
+  }
+
+  const { left, right } = data.pair;
+  const progressPercent = data.total === 0 ? 0 : (data.done / data.total) * 100;
+
+  return (
+    <div className="container mx-auto p-4">
+      <h1 className="text-2xl font-bold mb-4">Выбери более важную инициативу</h1>
+      <div className="mb-4">
+        <progress value={data.done} max={data.total} className="w-full h-2" />
+        <p className="mt-2">{data.done} из {data.total} завершено</p>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <InitiativeCard initiative={left} onClick={() => handleVote(left.id)} />
+        <InitiativeCard initiative={right} onClick={() => handleVote(right.id)} />
+      </div>
+      <div className="flex justify-between mt-4">
+      <button
+        className="bg-gray-200 px-4 py-2 rounded"
+        onClick={handleBack}
+      >
+        Назад
+      </button>
+      <button
+        className="bg-gray-200 px-4 py-2 rounded"
+        onClick={() => router.push('/history')}
+      >
+        История
+      </button>
+      </div>
     </div>
   );
+}
 
-  if (loading) {
-    return (
-      <main className="flex items-center justify-center h-screen">
-        <p>Загрузка…</p>
-      </main>
-    );
-  }
-  if (error) {
-    return (
-      <main className="flex items-center justify-center h-screen">
-        <p className="text-red-600">{error}</p>
-      </main>
-    );
-  }
-  if (!pair) {
-    return (
-      <main className="flex flex-col items-center justify-center h-screen space-y-4 px-4">
-        <h1 className="text-xl font-semibold">Вы завершили все сравнения</h1>
-        <p className="text-gray-600">Спасибо за участие!</p>
-        <Link href="/" className="text-blue-600 underline">Вернуться на главную</Link>
-      </main>
-    );
-  }
+function InitiativeCard({ initiative, onClick }: { initiative: Initiative; onClick: () => void }) {
   return (
-    <main className="flex flex-col items-center px-4 py-8 gap-6">
-      <h1 className="text-2xl font-bold">Сравнение инициатив</h1>
-      <p className="text-gray-600">{pair.progress.completed} из {pair.progress.total} завершено</p>
-      <div className="w-full max-w-3xl grid grid-cols-1 sm:grid-cols-2 gap-4">
-        <button
-          onClick={() => handleVote('a')}
-          className="p-4 bg-white rounded shadow hover:shadow-lg transition text-left space-y-2 border border-gray-200"
-        >
-          {renderInitiative(pair.a)}
-        </button>
-        {pair.b ? (
-          <button
-            onClick={() => handleVote('b')}
-            className="p-4 bg-white rounded shadow hover:shadow-lg transition text-left space-y-2 border border-gray-200"
-          >
-            {renderInitiative(pair.b)}
-          </button>
-        ) : (
-          <div className="p-4 bg-gray-50 rounded border border-gray-200 flex items-center justify-center">
-            <p className="text-gray-500">Нет второй инициативы</p>
-          </div>
-        )}
-      </div>
-    </main>
+    <div
+      className="border rounded-lg p-4 cursor-pointer hover:shadow-md"
+      onClick={onClick}
+    >
+      <h2 className="font-bold text-lg mb-2">{initiative.businessStream}-{initiative.number}</h2>
+      <p className="italic mb-2">{initiative.initiativeName}</p>
+      <p>Стрим: {initiative.businessStream}</p>
+      <p>Группа: {initiative.initiativeGroup}</p>
+      <p>Важно? — {initiative.importantStatus}</p>
+      <p>Срочно? — {initiative.urgentStatus}</p>
+      <p>Отбираем ли у СДЭК? — {initiative.cdekStatus}</p>
+      <p>Делаем сейчас? — {initiative.inProcessStatus}</p>
+    </div>
   );
 }
