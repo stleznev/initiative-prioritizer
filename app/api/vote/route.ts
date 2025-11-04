@@ -1,118 +1,123 @@
-import { NextRequest, NextResponse } from 'next/server';
+// app/api/vote/route.ts
+import { NextResponse } from 'next/server';
+import { z } from 'zod';
 import { cookies } from 'next/headers';
 import prisma from '../../../lib/prisma';
 
-/**
- * Records a user's comparison between two initiatives and updates their
- * ranking state using the interactive insertion algorithm. Expects a JSON
- * payload with `leftId`, `rightId` and `winnerId`. The `rightId` may be
- * `null` when inserting the very first initiative. Returns a 204 No Content
- * on success or a JSON error response on failure.
- */
-export async function POST(req: NextRequest) {
-  try {
-    const body = await req.json();
-    const { leftId, rightId, winnerId } = body || {};
-    if (!leftId || typeof winnerId !== 'string') {
-      return NextResponse.json({ error: 'Неверный формат запроса' }, { status: 400 });
-    }
-    // Identify user via cookie
-    const cookieStore = cookies();
-    const uid = cookieStore.get('uid')?.value;
-    if (!uid) {
-      return NextResponse.json({ error: 'Пользователь не найден' }, { status: 401 });
-    }
-    // Look up user
-    let user = await prisma.user.findUnique({ where: { cookieId: uid } });
-    if (!user) {
-      // Should rarely happen; create user on the fly
-      user = await prisma.user.create({ data: { cookieId: uid, name: 'Anonymous' } });
-    }
-    // Active dataset
-    const dataset = await prisma.dataset.findFirst({ where: { isActive: true }, orderBy: { createdAt: 'desc' } });
-    if (!dataset) {
-      return NextResponse.json({ error: 'Нет активного датасета' }, { status: 400 });
-    }
-    // State
-    let state = await prisma.userState.findUnique({ where: { userId_datasetId: { userId: user.id, datasetId: dataset.id } } });
-    if (!state) {
-      state = await prisma.userState.create({ data: { userId: user.id, datasetId: dataset.id, orderedIds: [] } });
-    }
-    const orderedIds = state.orderedIds;
-    const cursorId = state.cursorId;
-    // Determine order index for the vote (0-based)
-    const voteCount = await prisma.vote.count({ where: { userId: user.id, datasetId: dataset.id } });
-    // Create vote record
-    await prisma.vote.create({
-      data: {
-        userId: user.id,
-        datasetId: dataset.id,
-        leftId,
-        rightId: rightId ?? '',
-        winnerId,
-        orderIndex: voteCount,
-      },
-    });
-    // If there is no cursor (unexpected) just return
-    if (!cursorId) {
-      return new NextResponse(null, { status: 204 });
-    }
-    // Handle insertion when there are no items placed yet or rightId is null
-    if (orderedIds.length === 0 || !rightId) {
-      const newOrder = [...orderedIds];
-      newOrder.push(cursorId);
-      await prisma.userState.update({
-        where: { id: state.id },
-        data: {
-          orderedIds: newOrder,
-          cursorId: null,
-          low: null,
-          high: null,
-        },
-      });
-      return new NextResponse(null, { status: 204 });
-    }
-    // Continue binary search. low/high may be null if uninitialised; default them.
-    let low = state.low ?? 0;
-    let high = state.high ?? orderedIds.length - 1;
-    const mid = Math.floor((low + high) / 2);
-    let newLow = low;
-    let newHigh = high;
-    if (winnerId === cursorId) {
-      // Cursor wins against opponent; search left half
-      newHigh = mid - 1;
-    } else {
-      // Cursor loses; search right half
-      newLow = mid + 1;
-    }
-    if (newLow > newHigh) {
-      // We found the insertion position
-      const pos = Math.max(0, newLow);
-      const newOrder = [...orderedIds];
-      // Insert cursorId at pos
-      newOrder.splice(pos, 0, cursorId);
-      await prisma.userState.update({
-        where: { id: state.id },
-        data: {
-          orderedIds: newOrder,
-          cursorId: null,
-          low: null,
-          high: null,
-        },
-      });
-    } else {
-      // Continue search: update low/high
-      await prisma.userState.update({
-        where: { id: state.id },
-        data: {
-          low: newLow,
-          high: newHigh,
-        },
-      });
-    }
-    return new NextResponse(null, { status: 204 });
-  } catch (err) {
-    console.error('Vote error', err);
-    return NextResponse.json({ error: 'Ошибка при сохранении выбора' }, { status: 500 });
+const voteSchema = z.object({
+  leftId: z.string().min(1),
+  rightId: z.string().min(1),
+  winnerId: z.string().min(1),
+});
+
+export async function POST(req: Request) {
+  const body = await req.json();
+  const result = voteSchema.safeParse(body);
+  if (!result.success) {
+    return NextResponse.json({ error: result.error.message }, { status: 400 });
   }
+
+  const { leftId, rightId, winnerId } = result.data;
+
+  if (![leftId, rightId].includes(winnerId)) {
+    return NextResponse.json({ error: 'winnerId must be either leftId or rightId' }, { status: 400 });
+  }
+
+  const cookieStore = cookies();
+  const uid = cookieStore.get('uid')?.value;
+  if (!uid) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  // находим активный датасет
+  const dataset = await prisma.dataset.findFirst({ where: { isActive: true }, orderBy: { createdAt: 'desc' } });
+  if (!dataset) {
+    return NextResponse.json({ error: 'No active dataset' }, { status: 404 });
+  }
+
+  const state = await prisma.userState.findUnique({
+    where: {
+      userId_datasetId: { userId: uid, datasetId: dataset.id },
+    },
+  });
+
+  if (!state) {
+    return NextResponse.json({ error: 'User state not found' }, { status: 404 });
+  }
+
+  // создаем запись о голосе
+  const vote = await prisma.vote.create({
+    data: {
+      leftId,
+      rightId,
+      winnerId,
+      userId: uid,
+      datasetId: dataset.id,
+      orderIndex: await prisma.vote.count({ where: { userId: uid, datasetId: dataset.id } }),
+    },
+  });
+
+  // обновляем состояние
+  const ordered = state.orderedIds as string[];
+  let { cursorId, low, high } = state;
+
+  if (!cursorId) {
+    // на всякий случай - это не должно происходить
+    return NextResponse.json({ success: true });
+  }
+
+  // выбираем mid
+  const mid = ordered.length > 0 ? Math.floor((low + high) / 2) : 0;
+  const midId = ordered[mid];
+
+  let newOrdered = ordered;
+  let newCursorId = cursorId;
+  let newLow = low;
+  let newHigh = high;
+
+  if (winnerId === cursorId) {
+    // новая инициатива "лучше", ищем в левой половине
+    newHigh = mid - 1;
+  } else {
+    // текущая инициатива "хуже", ищем в правой половине
+    newLow = mid + 1;
+  }
+
+  if (newLow > newHigh) {
+    // вставляем cursorId в orderedIds
+    newOrdered = [
+      ...ordered.slice(0, newLow),
+      cursorId,
+      ...ordered.slice(newLow),
+    ];
+    // выбираем новый cursorId
+    const allIds = await prisma.initiative.findMany({
+      where: { datasetId: dataset.id },
+      select: { id: true },
+      orderBy: { id: 'asc' },
+    });
+    const remaining = allIds
+      .map((i) => i.id)
+      .filter((id) => !newOrdered.includes(id));
+
+    newCursorId = remaining.length > 0
+      ? remaining[Math.floor(Math.random() * remaining.length)]
+      : null;
+
+    newLow = 0;
+    newHigh = newOrdered.length - 1;
+  }
+
+  await prisma.userState.update({
+    where: { userId_datasetId: { userId: uid, datasetId: dataset.id } },
+    data: {
+      orderedIds: newOrdered,
+      cursorId: newCursorId,
+      low: newLow,
+      high: newHigh,
+      currentIndex: null,
+    },
+  });
+
+  return NextResponse.json({ success: true });
 }
