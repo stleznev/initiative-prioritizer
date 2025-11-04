@@ -54,6 +54,9 @@ export async function GET() {
 
   // если у пользователя нет текущего cursorId, выбираем случайно
   let { cursorId, low, high, orderedIds } = userState;
+  // если low или high равны null, подставим безопасные значения
+  const safeLow = typeof low === 'number' ? low : 0;
+  const safeHigh = typeof high === 'number' ? high : orderedIds.length - 1;
   if (!cursorId) {
     const remaining = allIds.filter((id) => !orderedIds.includes(id));
     if (remaining.length === 0) {
@@ -72,10 +75,9 @@ export async function GET() {
   let mid;
   let compareId;
   if (orderedIds.length === 0) {
-    // пока список пуст, выбираем первую случайную пару (cursorId против первого из оставшихся)
     compareId = allIds.find((id) => id !== cursorId) ?? cursorId;
   } else {
-    mid = Math.floor((low + high) / 2);
+    mid = Math.floor((safeLow + safeHigh) / 2);
     compareId = orderedIds[mid];
   }
 
