@@ -1,106 +1,93 @@
-import { cookies } from 'next/headers';
+// app/api/next-pair/route.ts
 import { NextResponse } from 'next/server';
+import { cookies } from 'next/headers';
 import prisma from '../../../lib/prisma';
 
-/**
- * Returns the next pair of initiatives for a user to compare. This implements
- * the interactive insertion algorithm with binary search to avoid asking
- * redundant comparisons. If no active dataset exists or the user has
- * completed all comparisons, `null` is returned.
- */
+function expectedComparisons(count: number): number {
+  let total = 0;
+  for (let i = 1; i <= count; i++) {
+    total += Math.ceil(Math.log2(i));
+  }
+  return total;
+}
+
 export async function GET() {
-  // Get or create a cookie-based user identifier
   const cookieStore = cookies();
-  let uid = cookieStore.get('uid')?.value;
-  const responseInit: any = {};
+  const uid = cookieStore.get('uid')?.value;
+
   if (!uid) {
-    // Generate a new UUID as cookie ID
-    uid = crypto.randomUUID();
-    // Set cookie on response later
-    responseInit.cookies = [];
-    responseInit.cookies.push({
-      name: 'uid',
-      value: uid,
-      path: '/',
-      httpOnly: true,
-      maxAge: 60 * 60 * 24 * 30, // 30 days
-    });
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
-  // Find or create user
-  let user = await prisma.user.findUnique({ where: { cookieId: uid } });
-  if (!user) {
-    user = await prisma.user.create({ data: { cookieId: uid, name: 'Anonymous' } });
-  }
-  // Get the currently active dataset
+
+  // активный датасет
   const dataset = await prisma.dataset.findFirst({ where: { isActive: true }, orderBy: { createdAt: 'desc' } });
   if (!dataset) {
-    const res = NextResponse.json(null);
-    // attach cookie if we just created one
-    if (responseInit.cookies) {
-      responseInit.cookies.forEach((c: any) => res.cookies.set(c.name, c.value, { path: c.path, httpOnly: c.httpOnly, maxAge: c.maxAge }));
-    }
-    return res;
+    return NextResponse.json({ error: 'No active dataset' }, { status: 404 });
   }
-  // Retrieve or initialise user state for this dataset
-  let state = await prisma.userState.findUnique({ where: { userId_datasetId: { userId: user.id, datasetId: dataset.id } } });
-  if (!state) {
-    state = await prisma.userState.create({ data: { userId: user.id, datasetId: dataset.id, orderedIds: [] } });
+
+  const userState = await prisma.userState.findUnique({
+    where: {
+      userId_datasetId: { userId: uid, datasetId: dataset.id },
+    },
+  });
+
+  if (!userState) {
+    return NextResponse.json({ error: 'User state not found' }, { status: 404 });
   }
-  // Load all initiative ids for this dataset
-  const initiatives = await prisma.initiative.findMany({ where: { datasetId: dataset.id }, select: { id: true } });
-  const ids = initiatives.map((i) => i.id);
-  // Determine which initiatives have not yet been placed in the user's order
-  const orderedIds = state.orderedIds;
-  let cursorId = state.cursorId;
-  let low = state.low;
-  let high = state.high;
+
+  // список всех id инициатив в текущем датасете
+  const allInitiatives = await prisma.initiative.findMany({
+    where: { datasetId: dataset.id },
+    select: { id: true },
+    orderBy: { id: 'asc' },
+  });
+  const allIds = allInitiatives.map((i) => i.id);
+
+  // количество голосов пользователя
+  const votesCount = await prisma.vote.count({ where: { userId: uid, datasetId: dataset.id } });
+
+  // если всё завершено
+  const totalNeeded = expectedComparisons(allIds.length);
+  if (votesCount >= totalNeeded) {
+    return NextResponse.json({ done: totalNeeded, total: totalNeeded, pair: null });
+  }
+
+  // если у пользователя нет текущего cursorId, выбираем случайно
+  let { cursorId, low, high, orderedIds } = userState;
   if (!cursorId) {
-    // Choose the next unplaced initiative
-    const unplaced = ids.filter((id) => !orderedIds.includes(id));
-    if (unplaced.length === 0) {
-      // All initiatives placed: mark done and return null
-      if (!state.done) {
-        await prisma.userState.update({ where: { id: state.id }, data: { done: true } });
-      }
-      const res = NextResponse.json(null);
-      if (responseInit.cookies) {
-        responseInit.cookies.forEach((c: any) => res.cookies.set(c.name, c.value, { path: c.path, httpOnly: c.httpOnly, maxAge: c.maxAge }));
-      }
-      return res;
+    const remaining = allIds.filter((id) => !orderedIds.includes(id));
+    if (remaining.length === 0) {
+      return NextResponse.json({ done: votesCount, total: totalNeeded, pair: null });
     }
-    cursorId = unplaced[0];
+    cursorId = remaining[Math.floor(Math.random() * remaining.length)];
     low = 0;
     high = orderedIds.length - 1;
-    await prisma.userState.update({ where: { id: state.id }, data: { cursorId, low, high } });
-  }
-  // When no initiatives have been placed, the first comparison is trivial: compare
-  // against null to insert the first initiative
-  if (orderedIds.length === 0) {
-    const initiativeA = await prisma.initiative.findUnique({ where: { id: cursorId } });
-    const res = NextResponse.json({
-      a: initiativeA,
-      b: null,
-      progress: { completed: 0, total: ids.length },
+    await prisma.userState.update({
+      where: { userId_datasetId: { userId: uid, datasetId: dataset.id } },
+      data: { cursorId, low, high },
     });
-    if (responseInit.cookies) {
-      responseInit.cookies.forEach((c: any) => res.cookies.set(c.name, c.value, { path: c.path, httpOnly: c.httpOnly, maxAge: c.maxAge }));
-    }
-    return res;
   }
-  // Compute midpoint index for binary search
-  const mid = Math.floor(((low as number) + (high as number)) / 2);
-  const opponentId = orderedIds[mid];
-  const [initiativeA, initiativeB] = await Promise.all([
+
+  // определяем mid
+  let mid;
+  let compareId;
+  if (orderedIds.length === 0) {
+    // пока список пуст, выбираем первую случайную пару (cursorId против первого из оставшихся)
+    compareId = allIds.find((id) => id !== cursorId) ?? cursorId;
+  } else {
+    mid = Math.floor((low + high) / 2);
+    compareId = orderedIds[mid];
+  }
+
+  // загружаем данные инициатив
+  const [left, right] = await Promise.all([
     prisma.initiative.findUnique({ where: { id: cursorId } }),
-    prisma.initiative.findUnique({ where: { id: opponentId } }),
+    prisma.initiative.findUnique({ where: { id: compareId } }),
   ]);
-  const res = NextResponse.json({
-    a: initiativeA,
-    b: initiativeB,
-    progress: { completed: orderedIds.length, total: ids.length },
+
+  return NextResponse.json({
+    done: votesCount,
+    total: totalNeeded,
+    pair: { left, right },
   });
-  if (responseInit.cookies) {
-    responseInit.cookies.forEach((c: any) => res.cookies.set(c.name, c.value, { path: c.path, httpOnly: c.httpOnly, maxAge: c.maxAge }));
-  }
-  return res;
 }
