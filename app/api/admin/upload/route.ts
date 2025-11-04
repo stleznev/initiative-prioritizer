@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import prisma from '@/lib/prisma';
+import prisma from '../../../../lib/prisma';
 import * as xlsx from 'xlsx';
 
 // Required columns for each row in the Excel file
