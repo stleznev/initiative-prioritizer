@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
-import prisma from '@/lib/prisma';
+import prisma from '../../../lib/prisma';
 
 /**
  * Records a user's comparison between two initiatives and updates their
