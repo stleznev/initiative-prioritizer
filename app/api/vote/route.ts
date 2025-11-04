@@ -59,7 +59,9 @@ export async function POST(req: Request) {
 
   // обновляем состояние
   const ordered = state.orderedIds as string[];
-  let { cursorId, low, high } = state;
+  let { cursorId, low, high, orderedIds } = userState;
+  const safeLow = low ?? 0;
+  const safeHigh = high ?? (orderedIds.length - 1);
 
   if (!cursorId) {
     // на всякий случай - это не должно происходить
@@ -67,13 +69,13 @@ export async function POST(req: Request) {
   }
 
   // выбираем mid
-  const mid = ordered.length > 0 ? Math.floor((low + high) / 2) : 0;
+  const mid = ordered.length > 0 ? Math.floor((safeLow + safeHigh) / 2) : 0;
   const midId = ordered[mid];
 
   let newOrdered = ordered;
   let newCursorId = cursorId;
-  let newLow = low;
-  let newHigh = high;
+  let newLow = safeLow;
+  let newHigh = safeHigh;
 
   if (winnerId === cursorId) {
     // новая инициатива "лучше", ищем в левой половине
