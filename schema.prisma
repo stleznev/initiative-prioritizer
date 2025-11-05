@@ -1,5 +1,4 @@
-// This Prisma schema defines the database models for the initiative prioritizer.
-// It closely follows the specification provided by the user.
+// Prisma schema for the Initiative Prioritizer application
 
 generator client {
   provider = "prisma-client-js"
@@ -11,76 +10,72 @@ datasource db {
 }
 
 model Dataset {
-  id        String   @id @default(uuid())
-  version   String
-  createdAt DateTime @default(now())
-  isActive  Boolean  @default(false)
+  id         String      @id @default(uuid())
+  version    String      @unique
+  createdAt  DateTime    @default(now())
+  isActive   Boolean     @default(false)
   initiatives Initiative[]
-  votes       Vote[]
-  userStates  UserState[]
+  userStates UserState[]
+  votes      Vote[]
 }
 
 model Initiative {
-  id               String   @id
-  businessStream   String
-  number           String
-  initiativeName   String
-  initiativeGroup  String
-  importantStatus  String
-  urgentStatus     String
-  cdekStatus       String
-  inProcessStatus  String
-  meta             Json?
-  datasetId        String
-  dataset          Dataset  @relation(fields: [datasetId], references: [id])
-  votesLeft        Vote[]   @relation("VoteLeft")
-  votesRight       Vote[]   @relation("VoteRight")
-  votesWinner      Vote[]   @relation("VoteWinner")
+  id              String     @id
+  businessStream  String
+  number          String
+  initiativeName  String
+  initiativeGroup String
+  importantStatus String
+  urgentStatus    String
+  cdekStatus      String
+  inProcessStatus String
+  datasetId       String
+  meta            Json?
+  dataset         Dataset    @relation(fields: [datasetId], references: [id])
+  votesLeft       Vote[]     @relation("VoteLeft")
+  votesRight      Vote[]     @relation("VoteRight")
+  votesWinner     Vote[]     @relation("VoteWinner")
 }
 
 model User {
-  id        String    @id @default(uuid())
-  cookieId  String?   @unique
-  name      String
-  createdAt DateTime  @default(now())
-  votes     Vote[]
-  states    UserState[]
+  id         String     @id
+  name       String
+  createdAt  DateTime   @default(now())
+  states     UserState[]
+  votes      Vote[]
 }
 
 model UserState {
-  id            String   @id @default(uuid())
-  userId        String
-  datasetId     String
-  orderedIds    String[]
-  cursorId      String?
-  low           Int?
-  high          Int?
-  currentIndex  Int?
-  done          Boolean  @default(false)
+  userId         String
+  datasetId      String
+  orderedIds     String[]   @default([])
+  cursorId       String?
+  low            Int        @default(0)
+  high           Int        @default(0)
+  currentIndex   Int?
+  done           Boolean    @default(false)
   historyPointer Int?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
-  user          User     @relation(fields: [userId], references: [id])
-  dataset       Dataset  @relation(fields: [datasetId], references: [id])
-
-  @@unique([userId, datasetId])
+  user           User       @relation(fields: [userId], references: [id])
+  dataset        Dataset    @relation(fields: [datasetId], references: [id])
+  @@id([userId, datasetId])
 }
 
 model Vote {
-  id         String   @id @default(uuid())
+  id         Int        @id @default(autoincrement())
   userId     String
   datasetId  String
   leftId     String
   rightId    String
   winnerId   String
-  createdAt  DateTime @default(now())
+  createdAt  DateTime   @default(now())
   orderIndex Int
-  user       User      @relation(fields: [userId], references: [id])
-  dataset    Dataset   @relation(fields: [datasetId], references: [id])
+  user       User       @relation(fields: [userId], references: [id])
+  dataset    Dataset    @relation(fields: [datasetId], references: [id])
   left       Initiative @relation("VoteLeft", fields: [leftId], references: [id])
   right      Initiative @relation("VoteRight", fields: [rightId], references: [id])
   winner     Initiative @relation("VoteWinner", fields: [winnerId], references: [id])
 
   @@index([datasetId])
   @@index([userId, datasetId])
+  @@unique([userId, datasetId, orderIndex], name: "userId_datasetId_orderIndex")
 }
