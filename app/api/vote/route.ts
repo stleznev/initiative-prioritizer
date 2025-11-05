@@ -1,9 +1,9 @@
-// app/api/vote/route.ts
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { cookies } from 'next/headers';
 import prisma from '../../../lib/prisma';
 
+// Schema to validate incoming vote payloads
 const voteSchema = z.object({
   leftId: z.string().min(1),
   rightId: z.string().min(1),
@@ -18,25 +18,34 @@ export async function POST(req: Request) {
   }
 
   const { leftId, rightId, winnerId } = result.data;
-
   if (![leftId, rightId].includes(winnerId)) {
     return NextResponse.json({ error: 'winnerId must be either leftId or rightId' }, { status: 400 });
   }
 
   const uid = cookies().get('uid')?.value;
-  if (!uid) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  if (!uid) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
 
-  const dataset = await prisma.dataset.findFirst({ where: { isActive: true }, orderBy: { createdAt: 'desc' } });
-  if (!dataset) return NextResponse.json({ error: 'No active dataset' }, { status: 404 });
+  // Find the active dataset
+  const dataset = await prisma.dataset.findFirst({
+    where: { isActive: true },
+    orderBy: { createdAt: 'desc' },
+  });
+  if (!dataset) {
+    return NextResponse.json({ error: 'No active dataset' }, { status: 404 });
+  }
 
+  // Fetch current user state
   const state = await prisma.userState.findUnique({
     where: { userId_datasetId: { userId: uid, datasetId: dataset.id } },
   });
-  if (!state) return NextResponse.json({ error: 'User state not found' }, { status: 404 });
+  if (!state) {
+    return NextResponse.json({ error: 'User state not found' }, { status: 404 });
+  }
 
-  // 1) Сохраняем голос (orderIndex = текущее количество голосов пользователя по датасету)
+  // Record the vote.  orderIndex is the next sequential index for this user and dataset.
   const orderIndex = await prisma.vote.count({ where: { userId: uid, datasetId: dataset.id } });
-
   await prisma.vote.create({
     data: {
       leftId,
@@ -48,64 +57,63 @@ export async function POST(req: Request) {
     },
   });
 
-  // 2) Обновляем состояние бинарной вставки
+  // Prepare variables for updating the user state
   const ordered = Array.isArray(state.orderedIds) ? [...state.orderedIds] : [];
-  const cursorId = state.cursorId; // тот самый "вставляемый" элемент
+  const cursorId = state.cursorId;
   if (!cursorId) {
-    // Бывает, если фронтенд дернул /vote вне шага сравнения — просто ок.
+    // This should not normally occur – just return success
     return NextResponse.json({ success: true });
   }
-
   const safeLow = typeof state.low === 'number' ? state.low : 0;
   const safeHigh = typeof state.high === 'number' ? state.high : ordered.length - 1;
-
-  // mid рассчитываем только если уже есть что сравнивать
   const mid = ordered.length > 0 ? Math.floor((safeLow + safeHigh) / 2) : 0;
 
   let newLow = safeLow;
   let newHigh = safeHigh;
-
-  if (winnerId === cursorId) {
-    // новая инициатива "лучше" — сужаем поиск влево
-    newHigh = mid - 1;
-  } else {
-    // новая инициатива "хуже" — сужаем поиск вправо
-    newLow = mid + 1;
-  }
-
   let newOrdered = ordered;
   let newCursorId: string | null = cursorId;
 
-  // если бинарный поиск закончен — вставляем cursorId в позицию newLow
+  // Update the search bounds based on the winner
+  if (winnerId === cursorId) {
+    // The new initiative "wins" the comparison – search the left half
+    newHigh = mid - 1;
+  } else {
+    // The new initiative loses – search the right half
+    newLow = mid + 1;
+  }
+
+  // If the binary search interval is exhausted or the ordered list is empty,
+  // insert the cursor into the ordered list and select a new cursor
   if (newLow > newHigh || ordered.length === 0) {
     const insertPos = ordered.length === 0 ? 0 : newLow;
     newOrdered = [...ordered.slice(0, insertPos), cursorId, ...ordered.slice(insertPos)];
 
-    // выбираем следующий cursorId из оставшихся
+    // Select the next cursor – any ID that is not yet ordered
     const allIds = await prisma.initiative.findMany({
       where: { datasetId: dataset.id },
       select: { id: true },
       orderBy: { id: 'asc' },
     });
-    const remaining = allIds.map(i => i.id).filter(id => !newOrdered.includes(id));
+    const remaining = allIds.map((i) => i.id).filter((id) => !newOrdered.includes(id));
     newCursorId = remaining.length > 0 ? remaining[Math.floor(Math.random() * remaining.length)] : null;
+    newLow = 0;
+    newHigh = newOrdered.length - 1;
 
-    // новые границы для следующей вставки
+    // Update the state and return
     await prisma.userState.update({
       where: { userId_datasetId: { userId: uid, datasetId: dataset.id } },
       data: {
         orderedIds: newOrdered,
         cursorId: newCursorId,
-        low: 0,
-        high: newOrdered.length - 1,
+        low: newLow,
+        high: newHigh,
         currentIndex: null,
       },
     });
-
     return NextResponse.json({ success: true });
   }
 
-  // иначе — продолжаем бинарный поиск (cursorId тот же, только границы сужены)
+  // Otherwise, continue the binary search without inserting the cursor
   await prisma.userState.update({
     where: { userId_datasetId: { userId: uid, datasetId: dataset.id } },
     data: {
