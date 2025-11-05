@@ -1,4 +1,3 @@
-// app/compare/page.tsx
 'use client';
 
 import { useEffect, useState } from 'react';
@@ -31,24 +30,28 @@ export default function ComparePage() {
   const router = useRouter();
 
   async function fetchNextPair() {
-    const res = await fetch('/api/next-pair', { cache: 'no-store' });
-    if (res.ok) {
+    try {
+      const res = await fetch('/api/next-pair', { cache: 'no-store' });
+      if (res.status === 401) {
+        // No uid cookie – redirect to onboarding
+        router.push('/onboarding');
+        return;
+      }
+      if (!res.ok) {
+        alert('Ошибка получения пар');
+        return;
+      }
       const json: PairResponse = await res.json();
       setData(json);
       setLoading(false);
-      if (json.pair === null) {
-        // все пары сравнили
-        return;
-      }
-    } else if (res.status === 401) {
-      router.push('/onboarding');
-    } else {
-      alert('Ошибка получения пар');
+    } catch (err) {
+      alert('Ошибка сети');
     }
   }
 
   useEffect(() => {
     fetchNextPair();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function handleVote(winnerId: string) {
@@ -66,22 +69,27 @@ export default function ComparePage() {
     fetchNextPair();
   }
 
-  // кнопка "Назад" – вызывайте новый API, который удаляет последний голос и обновляет состояние
   async function handleBack() {
     const res = await fetch('/api/history/back', { method: 'POST' });
-    if (res.ok) fetchNextPair();
+    if (res.ok) {
+      fetchNextPair();
+    }
   }
 
-  if (loading) return <p>Загрузка…</p>;
+  function goToHistory() {
+    router.push('/history');
+  }
+
+  if (loading) return <p className="p-4">Загрузка…</p>;
   if (!data) return null;
-
   if (data.pair === null) {
-    return <p>Спасибо за участие! Вы завершили {data.done} из {data.total} сравнений.</p>;
+    return (
+      <div className="container mx-auto p-4">
+        <p>Спасибо за участие! Вы завершили {data.done} из {data.total} сравнений.</p>
+      </div>
+    );
   }
-
   const { left, right } = data.pair;
-  const progressPercent = data.total === 0 ? 0 : (data.done / data.total) * 100;
-
   return (
     <div className="container mx-auto p-4">
       <h1 className="text-2xl font-bold mb-4">Выбери более важную инициативу</h1>
@@ -94,18 +102,8 @@ export default function ComparePage() {
         <InitiativeCard initiative={right} onClick={() => handleVote(right.id)} />
       </div>
       <div className="flex justify-between mt-4">
-      <button
-        className="bg-gray-200 px-4 py-2 rounded"
-        onClick={handleBack}
-      >
-        Назад
-      </button>
-      <button
-        className="bg-gray-200 px-4 py-2 rounded"
-        onClick={() => router.push('/history')}
-      >
-        История
-      </button>
+        <button className="bg-gray-200 px-4 py-2 rounded" onClick={handleBack}>Назад</button>
+        <button className="bg-gray-200 px-4 py-2 rounded" onClick={goToHistory}>История</button>
       </div>
     </div>
   );
