@@ -1,29 +1,37 @@
-// app/onboarding/page.tsx
 'use client';
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 
+/**
+ * Onboarding page.  Prompts the visitor for their name and registers
+ * them via the /api/setup endpoint.  Upon success, navigates to /compare.
+ */
 export default function OnboardingPage() {
   const [name, setName] = useState('');
   const [loading, setLoading] = useState(false);
   const router = useRouter();
 
-  async function handleSubmit(event: React.FormEvent) {
-    event.preventDefault();
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
     if (!name.trim()) return;
     setLoading(true);
-    const res = await fetch('/api/setup', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name }),
-    });
-    setLoading(false);
-    if (res.ok) {
-      router.push('/compare');
-    } else {
-      // обработайте ошибки если нужно
-      alert('Произошла ошибка. Попробуйте снова.');
+    try {
+      const res = await fetch('/api/setup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      });
+      setLoading(false);
+      if (res.ok) {
+        router.push('/compare');
+      } else {
+        const data = await res.json();
+        alert(data.error || 'Ошибка регистрации. Попробуйте ещё раз.');
+      }
+    } catch (err) {
+      setLoading(false);
+      alert('Ошибка сети. Попробуйте ещё раз.');
     }
   }
 
@@ -31,10 +39,10 @@ export default function OnboardingPage() {
     <div className="container mx-auto max-w-md px-4 py-8">
       <h1 className="text-2xl font-bold mb-4">Добро пожаловать!</h1>
       <p className="mb-4">Пожалуйста, введите ваше имя, чтобы начать сравнение инициатив.</p>
-      <form onSubmit={handleSubmit}>
+      <form onSubmit={handleSubmit} className="space-y-4">
         <input
           type="text"
-          className="border rounded w-full p-2 mb-4"
+          className="border rounded w-full p-2"
           placeholder="Ваше имя"
           value={name}
           onChange={(e) => setName(e.target.value)}
@@ -44,7 +52,7 @@ export default function OnboardingPage() {
           className="bg-blue-600 text-white px-4 py-2 rounded disabled:opacity-50"
           disabled={loading}
         >
-          {loading ? 'Загрузка...' : 'Начать'}
+          {loading ? 'Загрузка…' : 'Начать'}
         </button>
       </form>
     </div>
